@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+yfinance
+plotly
+ccxt
+beautifulsoup4
+requests
+python-dotenv
+fear-and-greed

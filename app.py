@@ -1,5 +1,5 @@
 import streamlit as st
-from ui_pages import dashboard
+from ui_pages import dashboard,news_page,tech_analysis
 # --- 1. 全域設定 (Global Settings) ---
 st.set_page_config(
     page_title="加密貨幣多維度分析系統",
@@ -39,12 +39,13 @@ if page == "🏠 首頁 & 市場總覽":
 elif page == "📰 新聞與輿情分析":
     st.title("即時新聞與情緒分析")
     st.write("這裡將顯示：Google News 爬蟲結果、情緒分數統計...")
-    # 未來呼叫 ui_pages.news_page.show()
+    news_page.show()
 
 elif page == "📈 歷史回測系統":
     st.title("事件驅動回測")
     st.write("這裡將顯示：重大新聞發生後的幣價走勢圖...")
-
+    tech_analysis.show()
+    
 elif page == "📊 技術分析室":
     st.title("多維度技術指標")
     st.write("這裡將顯示：RSI, MACD, K線圖...")
@@ -52,9 +53,10 @@ elif page == "📊 技術分析室":
 elif page == "💰 搬磚套利監控":
     st.title("跨交易所套利監控")
     st.write("這裡將顯示：Binance vs OKX 價差表...")
-    
+
     # 示範 Demo 模式的用法
     if use_demo_mode:
         st.metric("Binance - OKX 價差 (模擬)", "$150.23", "可套利!", delta_color="normal")
     else:
         st.info("正在連線交易所 API 獲取真實數據...")
+    

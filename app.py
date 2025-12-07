@@ -1,5 +1,5 @@
 import streamlit as st
-
+from ui_pages import dashboard
 # --- 1. 全域設定 (Global Settings) ---
 st.set_page_config(
     page_title="加密貨幣多維度分析系統",
@@ -35,7 +35,7 @@ if page == "🏠 首頁 & 市場總覽":
     st.title("加密貨幣市場總覽")
     st.write("這裡將顯示：恐懼貪婪指數、比特幣即時價格、鯨魚警報...")
     # 未來我們會在這裡呼叫 ui_pages.dashboard.show()
-
+    dashboard.show()
 elif page == "📰 新聞與輿情分析":
     st.title("即時新聞與情緒分析")
     st.write("這裡將顯示：Google News 爬蟲結果、情緒分數統計...")

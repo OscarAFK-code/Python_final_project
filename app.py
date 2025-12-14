@@ -57,5 +57,3 @@ elif page == "💰 搬磚套利監控":
     # 示範 Demo 模式的用法
     if use_demo_mode:
         st.metric("Binance - OKX 價差 (模擬)", "$150.23", "可套利!", delta_color="normal")
-    else:
-        st.info("正在連線交易所 API 獲取真實數據...")

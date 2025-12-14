@@ -1,12 +1,9 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import time
-import random
+import ccxt
 
 # --- 0. 自動刷新機制 (相容性處理) ---
-# 為了確保不同 Streamlit 版本都能跑，我們做個防呆檢查
-# 如果版本太舊沒有 fragment，就定義一個假的裝飾器讓程式不報錯
 try:
     from streamlit import fragment
 except ImportError:
@@ -15,69 +12,111 @@ except ImportError:
             return func
         return decorator
 
+# --- 1. 初始化交易所連線 ---
+@st.cache_resource
+def init_exchanges():
+    binance = ccxt.binance()
+    okx = ccxt.okx()
+    return binance, okx
+
+binance, okx = init_exchanges()
+
+def get_realtime_prices(symbol="BTC/USDT"):
+    try:
+        ticker_b = binance.fetch_ticker(symbol)
+        ticker_o = okx.fetch_ticker(symbol)
+        
+        return {
+            "binance": ticker_b['last'],
+            "okx": ticker_o['last'],
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return None
+
 def show():
-    # --- 1. 頁面標題與說明 ---
-    st.title("💰 跨交易所搬磚套利監控")
-    st.markdown("### 實時監控 Binance 與 OKX 之價差機會")
+    # --- 2. 頁面標題與設定 ---
+    st.title("💰 跨交易所搬磚套利監控 (Live)")
+    st.markdown("### 實時監控 Binance vs OKX 價差機會")
+    st.caption("資料來源: 交易所真實即時 API (CCXT)")
     st.markdown("---")
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.info("ℹ️ **搬磚原理：** 當 `Binance 價格` > `OKX 價格` 且價差大於手續費時，從 OKX 買入、Binance 賣出即可獲利。")
-    with col2:
-        # 控制開關：讓使用者可以暫停監控，避免眼睛花掉
+    # --- [新增] 初始化歷史數據暫存區 ---
+    # 如果這是第一次執行，就建立一個空的列表來放價差紀錄
+    if 'spread_history' not in st.session_state:
+        st.session_state['spread_history'] = []
+
+    col_cfg1, col_cfg2, col_cfg3 = st.columns([1, 1, 1])
+    with col_cfg1:
+        target_symbol = st.selectbox("監控幣種", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"])
+        # 如果使用者切換幣種，我們應該把舊的歷史圖表清空，重新開始畫
+        if 'last_symbol' not in st.session_state or st.session_state['last_symbol'] != target_symbol:
+            st.session_state['spread_history'] = [] # 清空
+            st.session_state['last_symbol'] = target_symbol # 更新記錄
+
+    with col_cfg2:
+        threshold_pct = st.number_input("獲利門檻 (%)", value=0.2, step=0.1)
+    with col_cfg3:
         is_running = st.toggle("🟢 啟動即時監控", value=True)
 
-    # --- 2. 自動刷新區域 (Core Logic) ---
-    # @fragment 是 Streamlit 1.37+ 的新功能
-    # run_every=3 代表：這個函式每 3 秒會自己重新執行一次！
+    # --- 3. 自動刷新區域 ---
     @fragment(run_every=3 if is_running else None)
     def monitor_prices():
-        st.caption(f"最後更新時間: {time.strftime('%H:%M:%S')}")
+        # A. 抓取真實資料
+        data = get_realtime_prices(target_symbol)
         
-        # --- A. 模擬即時價格 (Simulate Prices) ---
-        # 這裡用亂數產生，實際上你們會用 ccxt 去 fetch_ticker
-        base_price = 65000
-        noise = random.randint(-100, 100) # 市場波動
+        if data is None:
+            st.error("⚠️ 無法連線至交易所 API，請檢查網路。")
+            return
+
+        p_binance = data['binance']
+        p_okx = data['okx']
         
-        # 故意製造兩個交易所的價差
-        price_binance = base_price + noise + random.randint(0, 50)
-        price_okx = base_price + noise - random.randint(0, 50)
+        # B. 計算價差
+        diff = p_binance - p_okx 
+        abs_diff = abs(diff)
+        spread_pct = (abs_diff / min(p_binance, p_okx)) * 100
         
-        # 計算價差與獲利百分比
-        spread = price_binance - price_okx
-        spread_pct = (spread / price_okx) * 100
+        # --- [新增] 將最新價差存入歷史紀錄 ---
+        # 1. 把新的價差加入列表
+        st.session_state['spread_history'].append(abs_diff)
         
-        # --- B. 顯示價格看板 (Dashboard) ---
-        # 使用三個欄位顯示：Binance價格 | OKX價格 | 價差
+        # 2. 限制長度 (例如只保留最近 30 次的紀錄)，避免跑太久記憶體爆掉
+        if len(st.session_state['spread_history']) > 30:
+            st.session_state['spread_history'].pop(0) # 移除最舊的一筆
+
+        st.caption(f"最後更新: {time.strftime('%H:%M:%S')} | 監控中: {target_symbol}")
+
+        # C. 顯示價格看板
         c1, c2, c3 = st.columns(3)
-        
         with c1:
-            st.metric("Binance (BTC/USDT)", f"${price_binance:,.2f}", delta="賣出價")
-            
+            st.metric("Binance 價格", f"${p_binance:,.2f}")
         with c2:
-            st.metric("OKX (BTC/USDT)", f"${price_okx:,.2f}", delta="買入價", delta_color="inverse")
-            
+            st.metric("OKX 價格", f"${p_okx:,.2f}")
         with c3:
-            # 判斷是否為「獲利機會」
-            # 假設手續費成本約 0.1% (約 $65)，價差超過 $100 才算有賺
-            threshold = 100 
-            
-            if spread > threshold:
-                # 有套利機會！顯示綠色並放煙火
-                st.metric("價差獲利 (Spread)", f"${spread:.2f}", f"+{spread_pct:.2f}% 🚀", delta_color="normal")
-                st.success(f"🔥 **發現機會！** 建議：從 OKX 買入 -> 轉帳 -> Binance 賣出，預估每顆獲利 ${spread:.2f}")
+            if diff > 0:
+                st.metric("價差 (Spread)", f"${abs_diff:.2f}", f"Binance 溢價 {spread_pct:.2f}%", delta_color="normal")
             else:
-                # 無機會，顯示灰色
-                st.metric("價差 (Spread)", f"${spread:.2f}", "利潤不足", delta_color="off")
+                st.metric("價差 (Spread)", f"${abs_diff:.2f}", f"OKX 溢價 {spread_pct:.2f}%", delta_color="normal")
 
-        # --- C. 歷史價差走勢 (選配) ---
-        # 這裡簡單畫一個最近幾次的價差圖 (模擬)
-        st.markdown("#### ⏳ 近期價差波動")
-        fake_history = [random.randint(20, 150) for _ in range(20)]
-        fake_history.append(spread) # 把最新的加進去
-        st.line_chart(fake_history, height=200)
+        # --- [新增] 繪製即時波動圖 ---
+        st.markdown("#### ⏳ 近期價差波動 (Live Chart)")
+        
+        # 建立一個 DataFrame 方便畫圖
+        chart_data = pd.DataFrame(
+            st.session_state['spread_history'], 
+            columns=["價差 (USD)"]
+        )
+        # 使用 Streamlit 內建線圖，它會自動縮放
+        st.line_chart(chart_data, height=250, color="#29b5e8")
 
-    # --- 3. 執行監控函式 ---
-    # 這行很重要！一定要呼叫上面的函式，畫面才會出來
-    monitor_prices() 
+        # D. 套利建議 (保持不變)
+        st.markdown("#### 🤖 AI 套利建議")
+        if spread_pct >= threshold_pct:
+            direction = "OKX 買 -> Binance 賣" if diff > 0 else "Binance 買 -> OKX 賣"
+            st.success(f"🔥 **發現機會！** ({direction}) 預估獲利: {spread_pct:.2f}%")
+        else:
+            st.info(f"😴 目前價差僅 **{spread_pct:.4f}%**，低於門檻，建議觀望。")
+
+    # 4. 執行監控
+    monitor_prices()

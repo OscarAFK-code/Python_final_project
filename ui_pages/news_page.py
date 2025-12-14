@@ -1,106 +1,175 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
+import yfinance as yf
+from pygooglenews import GoogleNews
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from datetime import datetime, timedelta
+import re
 
+# --- 初始化分析器 (放在外面避免重複載入) ---
+analyzer = SentimentIntensityAnalyzer()
+
+# --- 1. 核心功能函式 (爬蟲與分析) ---
+
+def get_live_news():
+    """
+    抓取 Google News 上關於加密貨幣的即時新聞 (英文準確度較高)
+    """
+    gn = GoogleNews(lang='en', country='US')
+    search = gn.search('Bitcoin OR Ethereum OR Solana OR Crypto')
+    
+    news_items = []
+    
+    # 只取前 8 則最新新聞
+    for entry in search['entries'][:8]:
+        title = entry.title
+        published = entry.published_parsed
+        # 將時間轉為 HH:MM 格式
+        time_str = datetime(*published[:6]).strftime('%H:%M')
+        
+        # 情緒分析
+        score = analyzer.polarity_scores(title)['compound']
+        
+        if score >= 0.05:
+            sentiment = "正向 🔥"
+            sentiment_color = "green"
+        elif score <= -0.05:
+            sentiment = "負向 📉"
+            sentiment_color = "red"
+        else:
+            sentiment = "中立 😐"
+            sentiment_color = "gray"
+            
+        # 簡單判定幣種 (正規表達式)
+        ticker = "BTC" # 預設
+        if re.search(r'Ethereum|ETH|Ether', title, re.IGNORECASE):
+            ticker = "ETH"
+        elif re.search(r'Solana|SOL', title, re.IGNORECASE):
+            ticker = "SOL"
+        elif re.search(r'Bitcoin|BTC', title, re.IGNORECASE):
+            ticker = "BTC"
+            
+        news_items.append({
+            "時間": time_str,
+            "標題": title,
+            "情緒": sentiment,
+            "分數": score,
+            "幣種": ticker,
+            "連結": entry.link
+        })
+        
+    return pd.DataFrame(news_items)
+
+def get_crypto_price(ticker, days=7):
+    """
+    抓取指定幣種過去 N 天的價格
+    """
+    symbol_map = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD"}
+    symbol = symbol_map.get(ticker, "BTC-USD") # 找不到就預設 BTC
+    
+    # 抓取資料
+    df = yf.download(symbol, period=f"{days}d", interval="1h", progress=False)
+    return df, symbol
+
+# --- 2. 頁面顯示邏輯 (加上自動刷新) ---
+
+# 使用 @st.fragment 讓這個區塊獨立刷新
+@st.fragment(run_every=30)
 def show():
-    # --- 1. 頁面標題 ---
-    st.title("📰 全球加密貨幣輿情分析")
-    st.markdown("### 透過 AI 解析新聞情緒，並回測歷史事件對幣價的影響")
+    # --- 頁面標題 ---
+    st.title("📰 全球加密貨幣輿情分析 (Live)")
+    st.caption(f"最後更新: {datetime.now().strftime('%H:%M:%S')} | 資料來源: Google News & Yahoo Finance")
     st.markdown("---")
 
-    # --- 2. 版面配置 (Layout) ---
-    # 左邊 1/3 放列表，右邊 2/3 放圖表
+    # --- 抓取即時資料 ---
+    # 這裡會真的去爬蟲，所以可能會花 1-2 秒
+    with st.spinner("正在掃描全球新聞..."):
+        df_news = get_live_news()
+
+    # --- 版面配置 ---
     col1, col2 = st.columns([1, 2])
 
-    # --- 3. 左側：新聞列表 (Left Column) ---
+    # --- 左側：新聞列表 ---
     with col1:
         st.subheader("📡 即時新聞快訊")
         
-        # 模擬從 Google News 爬下來的資料
-        # 之後這裡會換成 data_modules.news_scraper 的結果
-        news_data = [
-            {"時間": "10:30", "標題": "SEC 批准比特幣現貨 ETF 上市", "情緒": "正向 🔥", "幣種": "BTC"},
-            {"時間": "09:45", "標題": "以太坊基金會拋售 2,000 ETH", "情緒": "負向 📉", "幣種": "ETH"},
-            {"時間": "09:15", "標題": "聯準會宣布維持利率不變", "情緒": "中立 😐", "幣種": "Macro"},
-            {"時間": "08:50", "標題": "Solana 網路發生短暫擁堵", "情緒": "負向 📉", "幣種": "SOL"},
-            {"時間": "08:10", "標題": "MicroStrategy 再度買入 3,000 BTC", "情緒": "正向 🔥", "幣種": "BTC"},
-        ]
-        
-        # 轉成 DataFrame 方便顯示
-        df_news = pd.DataFrame(news_data)
-        
-        # 使用者互動：選擇要分析哪一則新聞
-        # (這裡用 Selectbox 模擬「點擊新聞」的效果，比較不容易出錯)
-        selected_news_title = st.selectbox(
-            "👇 請選擇一則新聞進行回測：",
-            df_news["標題"]
+        # 讓使用者選擇新聞
+        # 注意：我們加上 key，這樣刷新時狀態才不會跑掉
+        selected_index = st.selectbox(
+            "👇 點擊選擇新聞以分析：",
+            options=range(len(df_news)),
+            format_func=lambda x: df_news.iloc[x]['標題'][:40] + "..." # 只顯示標題前40字
         )
         
-        # 顯示簡易表格
+        # 顯示簡易表格 (隱藏連結和分數，只看重點)
         st.dataframe(
             df_news[["時間", "幣種", "情緒", "標題"]], 
             hide_index=True,
-            use_container_width=True
+            use_container_width=True,
+            height=400
         )
         
-        st.info("💡 提示：情緒分數由 NLP 模型自動計算，🔥 代表極度看漲，📉 代表看跌。")
+        st.info("💡 系統每 30 秒自動爬取最新頭條。")
 
-    # --- 4. 右側：回測分析 (Right Column) ---
+    # --- 右側：分析圖表 ---
     with col2:
-        st.subheader("📈 事件影響力回測 (Event Backtesting)")
+        st.subheader("📈 市場趨勢對照")
         
-        # 找出使用者選了哪一則新聞
-        target_news = df_news[df_news["標題"] == selected_news_title].iloc[0]
+        # 取得使用者選中的那則新聞資料
+        target_news = df_news.iloc[selected_index]
         
+        # 顯示新聞詳情卡片
         st.markdown(f"""
-        **正在分析事件：** `{target_news['標題']}`  
-        **關聯幣種：** `{target_news['幣種']}` | **情緒判定：** {target_news['情緒']}
+        > **📰 選中新聞：** [{target_news['標題']}]({target_news['連結']})  
+        > **關聯幣種：** `{target_news['幣種']}` | **AI 情緒判定：** {target_news['情緒']} (分數: {target_news['分數']})
         """)
         
-        # 模擬：產生該事件發生後 7 天的價格走勢
-        # 這裡用隨機亂數模擬，之後會接 yfinance 抓真實歷史數據
-        days = 7
-        dates = [datetime.today() + timedelta(days=i) for i in range(days)]
+        # 抓取該幣種的真實走勢 (最近 7 天)
+        price_df, symbol = get_crypto_price(target_news['幣種'])
         
-        # 根據情緒造假數據 (如果是正向就畫漲，負向就畫跌)
-        start_price = 60000 if target_news['幣種'] == 'BTC' else 3000
-        volatility = start_price * 0.05 # 5% 波動
-        
-        if "正向" in target_news['情緒']:
-            # 模擬上漲趨勢
-            prices = [start_price * (1 + 0.02 * i) + np.random.normal(0, volatility/5) for i in range(days)]
-        elif "負向" in target_news['情緒']:
-            # 模擬下跌趨勢
-            prices = [start_price * (1 - 0.02 * i) + np.random.normal(0, volatility/5) for i in range(days)]
+        if not price_df.empty:
+            # 處理 yfinance 多層索引問題 (如果有的話)
+            if isinstance(price_df.columns, pd.MultiIndex):
+                price_df.columns = price_df.columns.get_level_values(0)
+                
+            close_col = 'Close' if 'Close' in price_df.columns else price_df.columns[0]
+            current_price = price_df[close_col].iloc[-1]
+            
+            # 畫圖
+            fig = go.Figure()
+            
+            # 價格線
+            fig.add_trace(go.Scatter(
+                x=price_df.index, 
+                y=price_df[close_col], 
+                mode='lines',
+                name=symbol,
+                line=dict(color='#00CC96', width=2)
+            ))
+            
+            fig.update_layout(
+                title=f"{symbol} 近七日走勢 (現價: ${current_price:,.2f})",
+                xaxis_title="時間",
+                yaxis_title="價格 (USD)",
+                height=450,
+                template="plotly_dark",
+                hovermode="x unified"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 根據情緒給出簡單建議
+            if target_news['分數'] > 0.05:
+                st.success(f"🤖 **AI 分析建議：** 此新聞偏向利多，且 {target_news['幣種']} 近期趨勢若向上，可視為買入訊號。")
+            elif target_news['分數'] < -0.05:
+                st.error(f"🤖 **AI 分析建議：** 此新聞偏向利空，請留意 {target_news['幣種']} 是否出現拋售壓力。")
+            else:
+                st.warning(f"🤖 **AI 分析建議：** 此新聞情緒中立，市場可能正在觀望，建議等待趨勢明確。")
         else:
-            # 模擬盤整
-            prices = [start_price + np.random.normal(0, volatility/2) for i in range(days)]
+            st.error("無法抓取價格數據，請稍後再試。")
 
-        # 畫圖 (使用 Plotly)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=dates, 
-            y=prices, 
-            mode='lines+markers',
-            name=target_news['幣種'],
-            line=dict(width=3)
-        ))
-        
-        fig.update_layout(
-            title=f"{target_news['幣種']} 在新聞發布後 7 天的走勢",
-            xaxis_title="日期 (模擬預測)",
-            yaxis_title="價格 (USD)",
-            height=400,
-            template="plotly_dark" # 使用深色主題看起來比較專業
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 顯示回測結論
-        avg_change = ((prices[-1] - prices[0]) / prices[0]) * 100
-        if avg_change > 0:
-            st.success(f"✅ 回測結果：此類新聞發布後，一週內平均上漲 **{avg_change:.2f}%**")
-        else:
-            st.error(f"🔻 回測結果：此類新聞發布後，一週內平均下跌 **{avg_change:.2f}%**")
+# 這一行是為了讓你單獨執行這個檔案測試用的
+if __name__ == "__main__":
+    st.set_page_config(layout="wide")
+    show()

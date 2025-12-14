@@ -1,88 +1,146 @@
 import streamlit as st
-import random
+import requests
+from datetime import datetime
+import yfinance as yf
+import pandas as pd
 import time
 
-def show():
-    # --- 1. 頁面標題區 ---
-    st.title("🏠 市場總覽 Dashboard")
-    st.markdown("### 全球加密貨幣市場情緒與大戶動向")
-    st.markdown("---")
-
-    # --- 2. 第一區塊：關鍵指標 (Key Metrics) ---
-    # 我們切成 3 個欄位，看起來比較專業
-    col1, col2, col3 = st.columns(3)
-
-    # 模擬數據生成 (之後會換成真正的 API)
-    fgi_value = random.randint(10, 90)
-    btc_price = 65000 + random.randint(-500, 500)
-    eth_price = 3500 + random.randint(-50, 50)
-
-    # 根據恐懼指數決定顏色
-    if fgi_value < 40:
-        fgi_state = "恐懼 (Fear)"
-        fgi_color = "inverse" # 紅色
-    elif fgi_value > 60:
-        fgi_state = "貪婪 (Greed)"
-        fgi_color = "normal" # 綠色
-    else:
-        fgi_state = "中立 (Neutral)"
-        fgi_color = "off" # 灰色
-
-    # 顯示數據
-    with col1:
-        st.metric(
-            label="Fear & Greed Index", 
-            value=f"{fgi_value}", 
-            delta=fgi_state,
-            delta_color=fgi_color
-        )
-    
-    with col2:
-        st.metric(
-            label="Bitcoin (BTC)",
-            value=f"${btc_price:,}",
-            delta="+2.4%", # 假裝今天漲了
-        )
-
-    with col3:
-        st.metric(
-            label="Ethereum (ETH)",
-            value=f"${eth_price:,}",
-            delta="-0.8%", # 假裝今天跌了
-            delta_color="inverse"
-        )
-
-    st.markdown("---")
-
-    # --- 3. 第二區塊：鯨魚警報 (Whale Alerts) ---
-    st.subheader("🐋 即時鯨魚警報 (Whale Alert)")
-    
-    # 這裡利用 st.expander 做成可收合的說明
-    with st.expander("ℹ️ 什麼是鯨魚警報？"):
-        st.write("監控鏈上單筆超過 **1,000 BTC** 的大額轉帳。通常轉入交易所暗示**賣壓**，轉出暗示**囤幣**。")
-
-    # 模擬警報數據列表
-    alerts = [
-        {"time": "09:45", "coin": "BTC", "amount": 1200, "from": "Unknown", "to": "Binance", "type": "sell"},
-        {"time": "08:30", "coin": "ETH", "amount": 15000, "from": "OKX", "to": "Unknown", "type": "buy"},
-        {"time": "07:15", "coin": "BTC", "amount": 850, "from": "Coinbase", "to": "Unknown", "type": "buy"},
-        {"time": "06:50", "coin": "USDT", "amount": 50000000, "from": "Tether Treasury", "to": "Binance", "type": "pump"},
-    ]
-
-    # 用迴圈把每一條警報印出來
-    for alert in alerts:
-        # 根據類型決定圖示和顏色
-        if alert['type'] == 'sell':
-            icon = "🚨"
-            msg = f"**{alert['time']}** | ⚠️ 大額轉入交易所 (疑似倒貨): **{alert['amount']:,} {alert['coin']}** 從 {alert['from']} -> {alert['to']}"
-            st.error(f"{icon} {msg}")
+# --- 1. 抓取價格函式 ---
+def get_crypto_price(ticker):
+    """使用 yfinance 抓取即時價格與漲跌幅"""
+    try:
+        data = yf.Ticker(ticker)
+        # 這裡改用 1d 或 5d 抓取資料量會小一點，速度快一點
+        hist = data.history(period="1d") 
+        if len(hist) == 0:
+            return 0, 0
         
-        elif alert['type'] == 'buy':
-            icon = "🟢"
-            msg = f"**{alert['time']}** | 💰 大戶提現囤幣: **{alert['amount']:,} {alert['coin']}** 從 {alert['from']} -> {alert['to']}"
-            st.success(f"{icon} {msg}")
+        current_price = hist['Close'].iloc[-1]
+        # yfinance有時只會回傳最新一筆，做個防呆
+        if len(hist) > 1:
+            prev_close = hist['Close'].iloc[-2]
+            change_percent = ((current_price - prev_close) / prev_close) * 100
+        else:
+            prev_close = current_price # 暫時視為沒漲跌
+            change_percent = 0.0
+        
+        return current_price, change_percent
+    except Exception as e:
+        return 0, 0
+
+# --- 2. 抓取恐懼貪婪指數函式 (維持不變) ---
+def get_fear_and_greed():
+    try:
+        url = "https://api.alternative.me/fng/"
+        response = requests.get(url, timeout=5) # 加個 timeout 避免卡住
+        data = response.json()
+        value = data['data'][0]['value']
+        classification = data['data'][0]['value_classification']
+        return int(value), classification
+    except:
+        return 50, "Unknown"
+
+# --- 3. 抓取鯨魚警報函式 ---
+def get_whale_alerts(threshold=500000): 
+    # 幣安 API: 抓取最近成交
+    url = "https://api.binance.com/api/v3/aggTrades"
+    params = {
+        "symbol": "BTCUSDT",
+        "limit": 500 
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=5)
+        trades = response.json()
+        
+        whale_trades = []
+        
+        for trade in reversed(trades):
+            price = float(trade['p'])
+            quantity = float(trade['q'])
+            timestamp = trade['T'] 
+            is_buyer_maker = trade['m'] 
             
-        elif alert['type'] == 'pump':
-            icon = "⛽"
-            msg = f"**{alert['time']}** | 燃料補充 (印鈔): **{alert['amount']:,} {alert['coin']}** 注入市場"
-            st.info(f"{icon} {msg}")
+            total_value = price * quantity
+            
+            if total_value >= threshold:
+                dt_object = datetime.fromtimestamp(timestamp / 1000)
+                time_str = dt_object.strftime("%H:%M:%S")
+                
+                side = "🔴 賣出 (Sell)" if is_buyer_maker else "🟢 買入 (Buy)"
+                
+                whale_trades.append({
+                    "時間": time_str,
+                    "幣種": "BTC",
+                    "方向": side,
+                    "價格": f"${price:,.2f}",
+                    "數量": f"{quantity:.4f}",
+                    "總價值 (USD)": f"${total_value:,.0f}"
+                })
+                
+                if len(whale_trades) >= 5:
+                    break
+        
+        if not whale_trades:
+            return pd.DataFrame(columns=["時間", "幣種", "方向", "價格", "數量", "總價值 (USD)"])
+            
+        return pd.DataFrame(whale_trades)
+        
+    except Exception as e:
+        # print(f"API Error: {e}") # Debug用
+        return pd.DataFrame()
+
+
+# --- A. 價格儀表板 (刷新：3秒) ---
+@st.fragment(run_every=3)
+def show_metrics_section():
+    st.caption(f"⚡ 價格更新: {time.strftime('%H:%M:%S')} (每3秒)")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # 1. 恐懼貪婪
+    fng_value, fng_label = get_fear_and_greed()
+    col1.metric("😨 恐懼貪婪", f"{fng_value}", fng_label)
+    
+    # 2. BTC
+    btc_price, btc_change = get_crypto_price("BTC-USD")
+    col2.metric("BTC 價格", f"${btc_price:,.2f}", f"{btc_change:.2f}%")
+    
+    # 3. ETH
+    eth_price, eth_change = get_crypto_price("ETH-USD")
+    col3.metric("ETH 價格", f"${eth_price:,.2f}", f"{eth_change:.2f}%")
+
+    # 4. SOL
+    sol_price, sol_change = get_crypto_price("SOL-USD")
+    col4.metric("SOL 價格", f"${sol_price:,.2f}", f"{sol_change:.2f}%")
+
+# --- B. 鯨魚警報區 (刷新：30秒) ---
+@st.fragment(run_every=30)
+def show_whale_section():
+    st.caption(f"🐋 鏈上數據更新: {time.strftime('%H:%M:%S')} (每30秒)")
+    
+    c1, c2 = st.columns([2, 1])
+    
+    with c1:
+        st.subheader("🐋 鯨魚大戶警報")
+        # 這裡為了展示效果，我把門檻調低一點點，比較容易看到資料
+        whale_df = get_whale_alerts(threshold=100000) 
+        st.table(whale_df)
+        
+    with c2:
+        st.subheader("📊 策略說明")
+        st.info("左側數據每 30 秒自動掃描一次區塊鏈上的大額轉帳。\n\n**紅色 (賣出)**：可能為倒貨訊號\n**綠色 (買入)**：可能為大戶進場")
+
+# --- 主程式進入點 ---
+def show():
+    # 標題不隨時間變動，放在最外面
+    st.markdown("### 🚀 市場即時儀表板 (多頻率更新版)")
+    st.markdown("---")
+
+    # 呼叫快速更新區塊
+    show_metrics_section()
+
+    st.markdown("---")
+
+    # 呼叫慢速更新區塊
+    show_whale_section()

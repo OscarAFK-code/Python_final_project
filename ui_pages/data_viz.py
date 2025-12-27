@@ -38,7 +38,7 @@ def show():
         )
         
         fig_treemap.update_layout(margin=dict(t=0, l=0, r=0, b=0), height=500)
-        st.plotly_chart(fig_treemap, use_container_width=True)
+        st.plotly_chart(fig_treemap, width=True)
 
     # --- Tab 2: 相關性矩陣 (Correlation Matrix) ---
     with tab2:
@@ -65,7 +65,7 @@ def show():
         )
         
         fig_corr.update_layout(height=500)
-        st.plotly_chart(fig_corr, use_container_width=True)
+        st.plotly_chart(fig_corr, width=True)
         
         # 4. 簡單結論生成
         high_corr_pair = corr_matrix.unstack().sort_values(ascending=False)

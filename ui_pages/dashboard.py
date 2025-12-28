@@ -1,45 +1,48 @@
 import streamlit as st
 import pandas as pd
 import time
-# 確保引用路徑正確
+# --- 修正引用路徑 ---
 from data_modules.market_data import get_price_data, get_fear_and_greed_index
+# 這裡要改成引用你 whale_watcher.py 最後面定義的那個整合函式
+from data_modules.whale_watcher import get_combined_whales 
 
 def show():
-    st.title(" 市場總覽 Dashboard")
-    st.markdown("全球主流交易所即時看板")
-    st.caption("數據來源：Binance / OKX / Kraken / Alternative.me / Etherscan")
+    st.title("🚁 市場戰情總覽 Dashboard")
+    st.caption("數據來源：Binance / OKX / Alternative.me / Etherscan (每 20 秒自動同步)")
     st.markdown("---")
 
-    # 20秒自動刷新的動態看板
+    # --- 核心：20秒自動刷新的動態看板 ---
     @st.fragment(run_every=20)
     def show_live_dashboard():
-        # 1. 在這裡統一抓取資料 (確保資料一致性)
-        # 不使用 cache 或 ttl=0，確保每次都是新的
-        with st.spinner('正在同步全球市場數據...'):
+        
+        # 1. 統一抓取所有資料 (價格 + 情緒 + 鯨魚)
+        # 放在同一個 spinner 裡，使用者只會感覺到一次載入
+        with st.spinner('📡 正在同步全球報價與鏈上數據...'):
+            # (A) 抓價格
             df = get_price_data(coins=['BTC', 'ETH', 'SOL', 'DOGE'])
+            # (B) 抓情緒
             fgi_data = get_fear_and_greed_index()
+            # (C) 抓鯨魚 (自動抓，不用按鈕了)
+            # 這裡會稍微多花 1-2 秒，因為你有設 time.sleep(1)
+            whale_data = get_combined_whales()
             
-            # 取得當前時間
+            # 取得更新時間
             current_time = time.strftime("%H:%M:%S")
 
-        # --- 區塊 A: 重點幣種報價 (Binance) ---
-        st.subheader(f" 重點關注幣種 (Binance) - {current_time} 更新")
+        # ===========================
+        # 第一區：重點幣種報價
+        # ===========================
+        st.subheader(f"💰 重點關注幣種 (Binance) - {current_time}")
         
         if not df.empty:
-            # 篩選出 Binance 的資料
             df_binance = df[df['Exchange'] == 'Binance'].set_index('Coin')
-            
             c1, c2, c3, c4 = st.columns(4)
             
-            # 定義一個內部小函式來顯示卡片，減少重複代碼
             def render_card(col, coin):
                 if coin in df_binance.index:
                     price = df_binance.loc[coin, 'Price']
                     change = df_binance.loc[coin, 'Change24h%']
-                    
-                    # 格式設定：小幣顯示4位小數，大幣顯示2位
                     fmt = "${:,.4f}" if price < 1 else "${:,.2f}"
-                    
                     col.metric(
                         label=f"{coin}/USDT",
                         value=fmt.format(price),
@@ -53,12 +56,13 @@ def show():
             render_card(c3, 'SOL')
             render_card(c4, 'DOGE')
         else:
-            st.error("⚠️ 無法連接交易所 API，請檢查網路或 API 設定")
+            st.error("⚠️ 無法連接交易所 API")
 
         st.markdown("---")
 
-        # --- 區塊 B: 詳細數據 (情緒指數 & 比價表) ---
-        # 我們將這兩塊並排顯示
+        # ===========================
+        # 第二區：情緒 & 比價
+        # ===========================
         col_left, col_right = st.columns([1, 2])
 
         # 左邊：情緒指數
@@ -67,48 +71,56 @@ def show():
             if fgi_data:
                 val = fgi_data['value']
                 state = fgi_data['state']
-                
-                # 決定顏色
                 if val < 40:
-                    color = "inverse" # 紅 (恐懼)
-                    emoji = "😨"
+                    color, emoji = "inverse", "😨"
                 elif val > 60:
-                    color = "normal"  # 綠 (貪婪)
-                    emoji = "🤑"
+                    color, emoji = "normal", "🤑"
                 else:
-                    color = "off"     # 灰 (中立)
-                    emoji = "😐"
+                    color, emoji = "off", "😐"
                 
-                st.metric("Fear & Greed Index", f"{val}", f"{emoji} {state}", delta_color=color)
+                st.metric("Fear & Greed", f"{val}", f"{emoji} {state}", delta_color=color)
                 st.progress(val / 100)
-                st.caption("資料來源: Alternative.me")
             else:
                 st.info("暫無情緒數據")
 
-        # 右邊：交易所比價表
+        # 右邊：比價表
         with col_right:
-            st.subheader("📊 三大交易所價格比較")
+            st.subheader("📊 交易所價差監控")
             if not df.empty:
-                # 製作 Pivot Table: Index=幣種, Columns=交易所, Values=價格
                 pivot_df = df.pivot(index='Coin', columns='Exchange', values='Price')
-                # 顯示表格並格式化為金錢符號
-                st.dataframe(
-                    pivot_df.style.format("${:,.2f}"), 
-                    use_container_width=True
-                )
-            else:
-                st.info("暫無比價數據")
+                st.dataframe(pivot_df.style.format("${:,.2f}"), use_container_width=True)
 
-    # 執行上面的自動刷新函式
+        st.markdown("---")
+
+        # ===========================
+        # 第三區：鯨魚警報 (自動顯示)
+        # ===========================
+        st.subheader("🐋 鏈上鯨魚監控 (On-Chain Whale Alert)")
+        st.caption("監控標準：BTC > $500萬 USD | ETH > $200萬 USD (自動掃描中...)")
+
+        if whale_data:
+            df_whale = pd.DataFrame(whale_data)
+            
+            # 1. 顯示最驚人的一筆
+            max_whale = df_whale.loc[df_whale['value_usd'].idxmax()]
+            st.warning(f"🚨 最新巨鯨動態：{max_whale['time']} 有人轉移了 {max_whale['amount']} {max_whale['symbol']} (價值 ${max_whale['value_usd']} M)")
+            
+            # 2. 顯示詳細清單
+            st.dataframe(
+                df_whale,
+                column_config={
+                    "time": "時間",
+                    "symbol": "幣種",
+                    "amount": st.column_config.NumberColumn("數量"),
+                    "value_usd": st.column_config.NumberColumn("價值 (百萬鎂)", format="$%.2f M"),
+                    "from": "發送方",
+                    "link": st.column_config.LinkColumn("鏈上 Tx Hash", display_text="查看 Etherscan")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info(f"🌊 ({current_time}) 目前區塊鏈上一片風平浪靜，暫無巨額轉帳。")
+
+    # 啟動自動刷新函式
     show_live_dashboard()
-
-
-    # --- 6. 鯨魚警報 (保留原本樣式) ---
-    st.subheader("🐋 近期大額轉帳警報")
-    alerts = [
-        {"time": "10:23", "msg": "🚨 2,000 BTC 從 未知錢包 轉入 Binance (可能賣壓)"},
-        {"time": "09:45", "msg": "🟢 50,000 SOL 從 OKX 提現至 錢包 (可能囤幣)"},
-        {"time": "08:12", "msg": "🚨 10,000,000 DOGE 轉入 Coinbase"},
-    ]
-    for alert in alerts:
-        st.text(f"{alert['time']} | {alert['msg']}")

@@ -3,160 +3,180 @@ import ccxt
 import time
 import pandas as pd
 
-# --- 1. 設定費率參數 ---
+# --- 1. 設定費率參數 (Global Config) ---
 class FeeConfig:
-    TAKER_FEE_RATE = 0.001  # 0.1% 交易手續費
-    # 為了簡化，我們先假設提現費是固定 U (例如波場鏈)
-    # 實際操作小幣種時，通常走 TRC20 或 BEP20，費用約 1 U
+    # 交易手續費 (Taker Fee 0.1%)
+    TAKER_FEE_RATE = 0.001
+    
+    # 模擬鏈上提現費 (假設走 TRC20/BEP20 等便宜網路，約 1 USDT)
+    # 為了計算方便，我們會將這 1 USDT 換算成對應幣種的數量扣除
     WITHDRAW_FEE_USDT = 1.0 
 
-# --- 2. 初始化交易所 ---
-# 使用快取 (Cache) 來初始化交易所物件，避免每次刷新都重連
+# --- 2. 初始化交易所 (含防封鎖設定) ---
 @st.cache_resource
 def init_exchanges():
-    return ccxt.binance(), ccxt.okx()
+    # enableRateLimit: True 是關鍵，讓 ccxt 自動幫我們排隊，避免被 Ban IP
+    config = {'enableRateLimit': True}
+    return ccxt.binance(config), ccxt.okx(config)
 
 binance, okx = init_exchanges()
 
-# --- 3. 獲取共同交易對 (關鍵邏輯) ---
-@st.cache_data(ttl=3600) # 設定快取 1 小時，不用每次都去抓幾千個幣
+# --- 3. 獲取共同交易對 (資料處理) ---
+@st.cache_data(ttl=3600) # 設定快取 1 小時
 def get_common_pairs():
-    """
-    抓取 Binance 和 OKX 的所有交易對，並找出「兩邊都有」的幣種
-    """
+    """找出 Binance 與 OKX 都有上架的 USDT 交易對"""
     try:
-        # 載入市場數據 (這會花幾秒鐘)
         binance_markets = binance.load_markets()
         okx_markets = okx.load_markets()
         
-        # 取出符號 (Keys) 並轉成 Set (集合)
-        b_symbols = set(binance_markets.keys())
-        o_symbols = set(okx_markets.keys())
+        # 取交集 (Intersection)
+        common = set(binance_markets.keys()) & set(okx_markets.keys())
         
-        # 找出交集 (Intersection) & 必須是 USDT 結算的現貨
-        common = list(b_symbols & o_symbols)
-        # 過濾出結尾是 /USDT 的交易對
+        # 篩選 USDT 結算
         usdt_pairs = [s for s in common if s.endswith('/USDT')]
-        usdt_pairs.sort() # 排序方便搜尋
-        
+        usdt_pairs.sort()
         return usdt_pairs
     except Exception as e:
         return []
 
-# --- 4. 監控與計算核心 ---
-# 定義 fragment 讓這部分可以獨立自動刷新
+# --- 4. 核心計算與渲染邏輯 (Helper Function) ---
+def calculate_and_render_card(direction, buy_price, sell_price, input_amount):
+    """
+    負責計算單一路徑的利潤，並畫出卡片與折疊選單
+    """
+    # [Step 1] 買入：扣除 Taker 手續費
+    coin_amount = (input_amount / buy_price) * (1 - FeeConfig.TAKER_FEE_RATE)
+    
+    # [Step 2] 提現：扣除固定手續費 (將 1 USDT 換算成該幣種數量)
+    # 這裡用「賣出價」來估算這 1 USDT 等於多少顆幣
+    withdraw_fee_coin = FeeConfig.WITHDRAW_FEE_USDT / sell_price
+    coin_arrived = coin_amount - withdraw_fee_coin
+    
+    # 防呆：如果錢太少，不夠付提現費
+    if coin_arrived <= 0:
+        st.error(f"❌ {direction}: 本金不足支付提現費")
+        return -input_amount # 虧光本金
+
+    # [Step 3] 賣出：扣除 Taker 手續費
+    revenue_usdt = (coin_arrived * sell_price) * (1 - FeeConfig.TAKER_FEE_RATE)
+    
+    # [Step 4] 結算
+    net_profit = revenue_usdt - input_amount
+    roi = (net_profit / input_amount) * 100
+    
+    # --- UI 顯示區域 ---
+    st.subheader(direction)
+    
+    # 根據獲利顯示顏色
+    color = "normal" if net_profit > 0 else "off"
+    
+    st.metric(
+        label="預估淨利 (Net Profit)",
+        value=f"${net_profit:.2f}",
+        delta=f"{roi:.2f}%",
+        delta_color=color
+    )
+    
+    # 這裡是你最想要的：詳細成本結構
+    with st.expander("📊 查看成本詳情 (Details)"):
+        st.markdown(f"""
+        - **1. 買入價 (Ask)**: `${buy_price:,.4f}`
+        - **2. 賣出價 (Bid)**: `${sell_price:,.4f}`
+        - **3. 交易手續費**: 約 `${(input_amount + revenue_usdt) * 0.001:.2f}` (雙邊總和)
+        - **4. 提現成本**: 固定 `${FeeConfig.WITHDRAW_FEE_USDT}` (約 `{withdraw_fee_coin:.5f}` 顆)
+        - **5. 實際到帳**: `{coin_arrived:.5f}` 顆
+        """)
+        
+        if net_profit > 0:
+            st.success("✅ **有利可圖！** 扣除所有成本後仍有獲利。")
+        else:
+            st.warning("⚠️ **利潤不足**：價差被手續費與提現費吃光了。")
+            
+    return roi # 回傳 ROI 供警報系統使用
+
+# --- 5. 自動掃描器 (Auto-Scanner) ---
+# 相容性檢查
 try:
     from streamlit import fragment
 except ImportError:
     def fragment(run_every=None):
-        def decorator(func):
-            return func
+        def decorator(func): return func
         return decorator
 
-@fragment(run_every=5) # 每 5 秒自動掃描一次
+@fragment(run_every=5) # 每 5 秒執行一次
 def run_scanner(symbol, input_amount, threshold_pct):
+    st.caption(f"⚡ 監控中 | 最後更新: {time.strftime('%H:%M:%S')} | 目標: {symbol}")
     
-    # 顯示掃描中的狀態
-    with st.spinner(f"正在監控 {symbol} ..."):
-        try:
-            # 1. 抓價格
-            t_bin = binance.fetch_ticker(symbol)
-            t_okx = okx.fetch_ticker(symbol)
-            
-            # 提取買賣價
-            # 路徑 A: Binance 買 -> OKX 賣
-            price_buy_A = t_bin['ask']
-            price_sell_A = t_okx['bid']
-            
-            # 路徑 B: OKX 買 -> Binance 賣
-            price_buy_B = t_okx['ask']
-            price_sell_B = t_bin['bid']
-            
-            # 2. 計算獲利函式 (內嵌簡化版)
-            def calc_profit(p_buy, p_sell):
-                # 買入扣費
-                coin_amt = (input_amount / p_buy) * (1 - FeeConfig.TAKER_FEE_RATE)
-                # 扣提現費 (假設等值 1 USDT 的幣)
-                withdraw_cost_coin = FeeConfig.WITHDRAW_FEE_USDT / p_sell 
-                coin_arrived = coin_amt - withdraw_cost_coin
-                
-                if coin_arrived <= 0: return -input_amount
-                
-                # 賣出扣費
-                usdt_back = (coin_arrived * p_sell) * (1 - FeeConfig.TAKER_FEE_RATE)
-                net = usdt_back - input_amount
-                roi = (net / input_amount) * 100
-                return net, roi
+    try:
+        # 取得即時價格
+        t_bin = binance.fetch_ticker(symbol)
+        t_okx = okx.fetch_ticker(symbol)
+        
+        col1, col2 = st.columns(2)
+        
+        # --- 路徑 A: Binance -> OKX ---
+        with col1:
+            roi_a = calculate_and_render_card(
+                direction="Binance ➡ OKX",
+                buy_price=t_bin['ask'],   # Binance 買
+                sell_price=t_okx['bid'],  # OKX 賣
+                input_amount=input_amount
+            )
 
-            net_A, roi_A = calc_profit(price_buy_A, price_sell_A)
-            net_B, roi_B = calc_profit(price_buy_B, price_sell_B)
-            
-            # 3. 顯示結果 UI
-            st.caption(f"最後更新: {time.strftime('%H:%M:%S')}")
-            
-            col1, col2 = st.columns(2)
-            
-            # 顯示路徑 A
-            with col1:
-                st.subheader("Binance ➡ OKX")
-                st.metric("買 Bin / 賣 OK", f"${price_buy_A} / ${price_sell_A}")
-                if roi_A > 0:
-                    st.success(f"獲利: +${net_A:.2f} (+{roi_A:.2f}%)")
-                else:
-                    st.error(f"虧損: ${net_A:.2f} ({roi_A:.2f}%)")
+        # --- 路徑 B: OKX -> Binance ---
+        with col2:
+            roi_b = calculate_and_render_card(
+                direction="OKX ➡ Binance",
+                buy_price=t_okx['ask'],   # OKX 買
+                sell_price=t_bin['bid'],  # Binance 賣
+                input_amount=input_amount
+            )
 
-            # 顯示路徑 B
-            with col2:
-                st.subheader("OKX ➡ Binance")
-                st.metric("買 OK / 賣 Bin", f"${price_buy_B} / ${price_sell_B}")
-                if roi_B > 0:
-                    st.success(f"獲利: +${net_B:.2f} (+{roi_B:.2f}%)")
-                else:
-                    st.error(f"虧損: ${net_B:.2f} ({roi_B:.2f}%)")
+        # --- 警報系統 (Toast) ---
+        if roi_a >= threshold_pct:
+            st.toast(f"🚀 機會！Binance -> OKX 獲利 {roi_a:.2f}%", icon="💰")
+        
+        if roi_b >= threshold_pct:
+            st.toast(f"🚀 機會！OKX -> Binance 獲利 {roi_b:.2f}%", icon="💰")
 
-            # 4. 警報系統 (Alert System)
-            # 如果任一邊利潤大於使用者設定的門檻
-            if roi_A >= threshold_pct:
-                msg = f"發現機會！從 Binance 搬去 OKX 可賺 {roi_A:.2f}%"
-                st.toast(msg, icon="💰") # 彈出右下角通知
-                # 也可以在這裡播放音效 (需進階 HTML) 或發送 Line Notify
+    except Exception as e:
+        st.error(f"連線錯誤 (請稍候): {e}")
 
-            if roi_B >= threshold_pct:
-                msg = f"發現機會！從 OKX 搬去 Binance 可賺 {roi_B:.2f}%"
-                st.toast(msg, icon="💰")
-
-        except Exception as e:
-            st.warning(f"掃描暫時中斷 (可能是網絡或 API 限制): {e}")
-
-# --- 5. 主頁面顯示 ---
+# --- 6. 主頁面 (Main Page) ---
 def show():
-    st.title("全幣種套利掃描")
-    st.markdown("針對 Binance 與 OKX 共同上架之幣種進行即時價差監控")
+    st.title("🕵️ 全幣種套利掃描 (Pro)")
+    st.markdown("### 雙向監控 Binance 與 OKX 之價差機會")
     
-    # 側邊欄或頂部設定
-    with st.expander("掃描設定", expanded=True):
+    # 設定區塊
+    with st.container(border=True):
+        st.markdown("**1. 參數設定**")
         
-        # 步驟 1: 載入共同幣種 (這是一個很好的技術亮點)
-        with st.spinner("正在同步兩大交易所的幣種清單..."):
+        # 載入幣種
+        with st.spinner("正在同步交易所幣種清單..."):
             common_pairs = get_common_pairs()
-        
+            
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
-            # 這裡就是你的需求：搜尋功能 (Selectbox 預設就有搜尋)
-            # 預設選一個波動大的小幣，例如 PEPE 或 DOGE，讓助教看到效果
+            # 預設選一個波動比較大的幣讓助教看效果 (如 DOGE)
             default_idx = common_pairs.index('DOGE/USDT') if 'DOGE/USDT' in common_pairs else 0
-            target_symbol = st.selectbox("搜尋並選擇監控幣種", common_pairs, index=default_idx)
-            
+            target_symbol = st.selectbox("🔍 搜尋幣種", common_pairs, index=default_idx)
         with c2:
-            amount = st.number_input("本金 (USDT)", value=1000.0)
-            
+            amount = st.number_input("本金 (USDT)", value=1000.0, step=100.0)
         with c3:
-            alert_threshold = st.number_input("獲利通知門檻 (%)", value=0.5, step=0.1)
+            threshold = st.number_input("通知門檻 (%)", value=0.5, step=0.1)
 
+    # 啟動區塊
     st.divider()
+    
+    c_toggle, c_info = st.columns([1, 3])
+    with c_toggle:
+        is_running = st.toggle("🔴 啟動自動掃描", value=False)
+    with c_info:
+        if is_running:
+            st.info("系統正在每 5 秒掃描一次，請觀察下方數據與右下角通知。")
+        else:
+            st.write("👆 請開啟開關以開始獲取即時數據。")
 
-    # 啟動按鈕
-    if st.toggle("🔴 啟動自動掃描 (Auto-Scanner)", value=False):
-        run_scanner(target_symbol, amount, alert_threshold)
-    else:
-        st.info("打開開關開始掃描，系統將每5秒檢查一次價差。")
+    # 執行掃描
+    if is_running:
+        run_scanner(target_symbol, amount, threshold)

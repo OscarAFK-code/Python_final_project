@@ -3,122 +3,119 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import ccxt
 
-# --- 輔助函式：產生逼真的模擬 K 線數據 ---
-def generate_fake_market_data(days=100, start_price=60000, volatility=0.02):
-    dates = pd.date_range(end=pd.Timestamp.today(), periods=days)
-    data = []
-    price = start_price
-    
-    for date in dates:
-        # 模擬每日漲跌 (隨機漫步)
-        change = np.random.normal(0, volatility)
-        open_price = price
-        close_price = price * (1 + change)
-        
-        # 根據開盤收盤，隨機產生最高最低價
-        if close_price > open_price:
-            high_price = close_price * (1 + abs(np.random.normal(0, volatility/2)))
-            low_price = open_price * (1 - abs(np.random.normal(0, volatility/2)))
-        else:
-            high_price = open_price * (1 + abs(np.random.normal(0, volatility/2)))
-            low_price = close_price * (1 - abs(np.random.normal(0, volatility/2)))
-            
-        data.append({
-            "Date": date,
-            "Open": open_price,
-            "High": high_price,
-            "Low": low_price,
-            "Close": close_price,
-            "Volume": np.random.randint(1000, 5000)
-        })
-        price = close_price # 更新隔天價格
-        
-    return pd.DataFrame(data).set_index("Date")
+def fetch_exchange_data(symbol="BTC/USDT", timeframe="1d", limit=100):
+    try:
+        exchange = ccxt.binance({'enableRateLimit': True})
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        df['Date'] = pd.to_datetime(df['Timestamp'], unit='ms')
+        df.set_index('Date', inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Binance 連線失敗: {e}")
+        return pd.DataFrame()
 
 def show():
-    # --- 1. 頁面標題與控制列 ---
     st.title("📊 專業技術分析室")
-    st.markdown("### 互動式 K 線圖與技術指標疊加")
     
-    # 建立 4 欄的控制列，讓使用者選擇參數
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
-        coin = st.selectbox("選擇幣種", ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"])
-    
+        coin_choice = st.selectbox("選擇幣種", ["BTC", "ETH", "SOL", "DOGE"])
+        symbol = f"{coin_choice}/USDT"
     with col2:
-        time_range = st.selectbox("時間範圍", ["1個月", "3個月", "6個月", "1年"])
-        # 這裡根據選擇設定天數 (模擬用)
-        days_map = {"1個月": 30, "3個月": 90, "6個月": 180, "1年": 365}
-        days = days_map[time_range]
-    
+        time_label = st.selectbox("抓取時間範圍", ["一天", "近七天", "一個月", "三個月", "一年"])
+        range_config = {
+            "一天": {"tf": "15m", "limit": 96},
+            "近七天": {"tf": "1h", "limit": 168},
+            "一個月": {"tf": "12h", "limit": 60},
+            "三個月": {"tf": "1d", "limit": 90},
+            "一年": {"tf": "1d", "limit": 365}
+        }
+        config = range_config[time_label]
     with col3:
-        # 多選選單：讓使用者疊加指標
         overlays = st.multiselect("疊加指標", ["MA20 (月線)", "MA60 (季線)", "Bollinger Bands"], default=["MA20 (月線)"])
-        
     with col4:
-        # 副圖指標 (尚未實作，先放選單)
         sub_chart = st.selectbox("副圖指標", ["Volume (成交量)", "RSI", "MACD"])
 
     st.markdown("---")
 
-    # --- 2. 獲取數據 (模擬) ---
-    # 根據幣種設定不同價格
-    start_price = 65000 if "BTC" in coin else (3500 if "ETH" in coin else 150)
-    df = generate_fake_market_data(days=days, start_price=start_price)
+    # --- 1. 抓取數據 (增加緩衝至 100 筆以滿足 MACD 26日需求) ---
+    buffer_size = 100 
+    total_limit = config["limit"] + buffer_size
+    
+    with st.spinner(f'正在獲取 {symbol} 數據...'):
+        df = fetch_exchange_data(symbol=symbol, timeframe=config["tf"], limit=total_limit)
 
-    # --- 3. 計算技術指標 ---
-    # 移動平均線
+    if df.empty: return
+
+    # --- 2. 根據定義計算指標 ---
+    # MA 定義
     df["MA20"] = df["Close"].rolling(window=20).mean()
     df["MA60"] = df["Close"].rolling(window=60).mean()
     
-    # 布林通道 (中軌=MA20, 上下軌=2個標準差)
-    df["BB_Upper"] = df["MA20"] + 2 * df["Close"].rolling(window=20).std()
-    df["BB_Lower"] = df["MA20"] - 2 * df["Close"].rolling(window=20).std()
+    # 布林通道定義
+    std_20 = df["Close"].rolling(window=20).std()
+    df["BB_Upper"] = df["MA20"] + (std_20 * 2)
+    df["BB_Lower"] = df["MA20"] - (std_20 * 2)
 
-    # --- 4. 繪製圖表 (使用 Plotly) ---
-    # 建立主圖 (K線) 與 副圖 (成交量/RSI) 的框架
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.03, subplot_titles=(f"{coin} 價格走勢", "成交量"), 
-                        row_width=[0.2, 0.7])
+    # RSI 計算
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
 
-    # [主圖] 繪製 K 線
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'],
-        name="K線"
-    ), row=1, col=1)
+    # MACD 定義
+    exp12 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['DIF'] = exp12 - exp26  # 快線
+    df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()  # 慢線 (MACD線)
+    df['MACD_Hist'] = df['DIF'] - df['DEA']  # 柱狀圖
 
-    # [主圖] 疊加指標 (根據使用者選擇)
+    # --- 3. 切除緩衝數據 ---
+    plot_df = df.iloc[buffer_size:].copy()
+
+    # --- 4. 繪圖 ---
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, 
+                        subplot_titles=(f"{symbol} 趨勢分析", sub_chart), row_width=[0.4, 0.6])
+
+    # [主圖] K線圖
+    fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
+                                 low=plot_df['Low'], close=plot_df['Close'], name="K線"), row=1, col=1)
+
+    # [主圖] 疊加指標
     if "MA20 (月線)" in overlays:
-        fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], line=dict(color='orange', width=1), name="MA20"), row=1, col=1)
-    
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["MA20"], line=dict(color='orange', width=1.5), name="MA20"), row=1, col=1)
     if "MA60 (季線)" in overlays:
-        fig.add_trace(go.Scatter(x=df.index, y=df["MA60"], line=dict(color='blue', width=1), name="MA60"), row=1, col=1)
-
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["MA60"], line=dict(color='cyan', width=1.5), name="MA60"), row=1, col=1)
     if "Bollinger Bands" in overlays:
-        # 畫布林通道上軌
-        fig.add_trace(go.Scatter(x=df.index, y=df["BB_Upper"], line=dict(color='gray', width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
-        # 畫布林通道下軌 (並填滿顏色)
-        fig.add_trace(go.Scatter(x=df.index, y=df["BB_Lower"], fill='tonexty', fillcolor='rgba(128, 128, 128, 0.2)', line=dict(color='gray', width=0), name="布林通道"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Upper"], line=dict(color='rgba(255,255,255,0.2)', width=1), name="布林上軌"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Lower"], line=dict(color='rgba(255,255,255,0.2)', width=1), 
+                                 fill='tonexty', fillcolor='rgba(173, 216, 230, 0.1)', name="布林下軌"), row=1, col=1)
 
-    # [副圖] 繪製成交量
-    colors = ['red' if row['Open'] - row['Close'] >= 0 else 'green' for index, row in df.iterrows()]
-    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name="Volume"), row=2, col=1)
-
-    # --- 5. 圖表美化設定 ---
-    fig.update_layout(
-        height=600, # 設定圖表高度
-        xaxis_rangeslider_visible=False, # 隱藏下方預設的滑桿 (因為我們有副圖了)
-        template="plotly_dark", # 深色主題
-        hovermode="x unified", # 游標移過去會顯示所有數值
-        margin=dict(l=0, r=0, t=30, b=0) # 縮減邊界
-    )
-
-    # 顯示圖表
-    st.plotly_chart(fig, use_container_width=True)
+    # [副圖] 根據選擇切換
+    if sub_chart == "Volume (成交量)":
+        colors = ['red' if r['Open'] > r['Close'] else 'green' for i, r in plot_df.iterrows()]
+        fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Volume'], marker_color=colors, name="成交量"), row=2, col=1)
     
-    # 顯示簡易數據統計
-    st.info(f"📊 {coin} 統計數據 ({time_range}): 最高價 ${df['High'].max():.2f} | 最低價 ${df['Low'].min():.2f} | 目前價格 ${df['Close'].iloc[-1]:.2f}")
+    elif sub_chart == "RSI":
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI'], line=dict(color='#AB63FA'), name="RSI"), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+    elif sub_chart == "MACD":
+        # 繪製 DIF 與 DEA 線
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['DIF'], line=dict(color='white', width=1.5), name="DIF (快線)"), row=2, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['DEA'], line=dict(color='yellow', width=1.5), name="DEA (慢線)"), row=2, col=1)
+        # 繪製柱狀圖：紅柱代表正值（多頭動能），綠柱代表負值（空頭動能）
+        hist_colors = ['red' if val >= 0 else 'green' for val in plot_df['MACD_Hist']]
+        fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['MACD_Hist'], marker_color=hist_colors, name="MACD柱狀圖"), row=2, col=1)
+
+    fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.info(f"💡 目前 {symbol} 報價: ${plot_df['Close'].iloc[-1]:,.2f}")
+    if df.empty:
+        st.warning(f"無法獲取 {symbol} 的數據，可能是網路問題或交易所限制，請稍後再試。")
+        return

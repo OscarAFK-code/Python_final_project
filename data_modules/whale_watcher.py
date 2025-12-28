@@ -4,14 +4,11 @@ from datetime import datetime
 import time
 import random
 
-# ==========================================
-# 設定區 (Configuration)
-# ==========================================
+# 設定區
 ETHERSCAN_API_KEY = "ETUAVQGCEJS6Z755JGQ2K9C1GSEHTGHK2Z" 
-BTC_THRESHOLD = 5000000  # 500萬美金
-ETH_THRESHOLD = 2000000  # 200萬美金
+BTC_THRESHOLD = 5000000  
+ETH_THRESHOLD = 2000000  
 
-# 價格估算 (若 API 失敗時的備案)
 BTC_PRICE_FIXED = 95000
 ETH_PRICE_FIXED = 3500
 
@@ -96,7 +93,6 @@ def generate_fake_whales():
         })
     return fake_data
 
-# ▼▼▼▼▼▼▼ 這裡就是你原本報錯的地方，我修正了 ▼▼▼▼▼▼▼
 def get_whale_alerts(is_demo=False):
     """
     統一入口函式

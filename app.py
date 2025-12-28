@@ -36,8 +36,8 @@ with st.sidebar:
     page = st.radio(
         "功能導航",
         [
-            "市場戰情總覽", 
-            "全球輿情分析", 
+            "市場總覽", 
+            "新聞輿情分析", 
             "重大事件回測", 
             "技術分析室", 
             "搬磚套利監控"
@@ -68,10 +68,10 @@ with st.sidebar:
 
 # --- 3. 頁面路由邏輯 (Page Routing) ---
 
-if page == "市場戰情總覽":
+if page == "市場總覽":
     dashboard.show()
 
-elif page == "全球輿情分析":
+elif page == "新聞輿情分析":
     news_page.show()
 
 elif page == "重大事件回測":

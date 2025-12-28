@@ -1,126 +1,149 @@
 import streamlit as st
 import pandas as pd
 import time
-# --- 修正引用路徑 ---
 from data_modules.market_data import get_price_data, get_fear_and_greed_index
-# 這裡要改成引用你 whale_watcher.py 最後面定義的那個整合函式
-from data_modules.whale_watcher import get_combined_whales 
-
+from data_modules.whale_watcher import get_whale_alerts 
 def show():
-    st.title("🚁 市場戰情總覽 Dashboard")
-    st.caption("數據來源：Binance / OKX / Alternative.me / Etherscan (每 20 秒自動同步)")
+    # 使用 container 讓標題區塊更集中
+    with st.container():
+        st.title("市場總覽")
+        st.markdown("Global Crypto Market Dashboard")
+    
     st.markdown("---")
 
     # --- 核心：20秒自動刷新的動態看板 ---
     @st.fragment(run_every=20)
     def show_live_dashboard():
         
-        # 1. 統一抓取所有資料 (價格 + 情緒 + 鯨魚)
-        # 放在同一個 spinner 裡，使用者只會感覺到一次載入
-        with st.spinner('📡 正在同步全球報價與鏈上數據...'):
+        # 0. 檢查是否為 Demo 模式
+        is_demo = st.session_state.get("IS_DEMO", False)
+
+        # 1. 統一抓取所有資料
+        # 使用 spinner 雖然好，但每 20 秒閃一次可能會擾民
+        # 我們改用一個小的 toast 或者右上角狀態提示
+        if is_demo:
+            st.toast("🔴 Demo 模式：使用模擬數據中...")
+            
+        with st.spinner('正在同步全球報價與鏈上數據...'):
             # (A) 抓價格
             df = get_price_data(coins=['BTC', 'ETH', 'SOL', 'DOGE'])
             # (B) 抓情緒
             fgi_data = get_fear_and_greed_index()
-            # (C) 抓鯨魚 (自動抓，不用按鈕了)
-            # 這裡會稍微多花 1-2 秒，因為你有設 time.sleep(1)
-            whale_data = get_combined_whales()
+            # (C) 抓鯨魚 (傳入 is_demo 參數!)
+            whale_data = get_whale_alerts(is_demo=is_demo)
             
             # 取得更新時間
             current_time = time.strftime("%H:%M:%S")
 
         # ===========================
-        # 第一區：重點幣種報價
+        # 第一區：重點幣種報價 (KPI Cards)
         # ===========================
-        st.subheader(f"💰 重點關注幣種 (Binance) - {current_time}")
-        
-        if not df.empty:
-            df_binance = df[df['Exchange'] == 'Binance'].set_index('Coin')
-            c1, c2, c3, c4 = st.columns(4)
+        # 使用 border=True 創造卡片感
+        with st.container(border=True):
+            col_header, col_time = st.columns([3, 1])
+            col_header.subheader("重點關注幣種 (Binance)")
+            col_time.caption(f"Last Updated: {current_time}")
             
-            def render_card(col, coin):
-                if coin in df_binance.index:
-                    price = df_binance.loc[coin, 'Price']
-                    change = df_binance.loc[coin, 'Change24h%']
-                    fmt = "${:,.4f}" if price < 1 else "${:,.2f}"
-                    col.metric(
-                        label=f"{coin}/USDT",
-                        value=fmt.format(price),
-                        delta=f"{change:.2f}%"
+            if not df.empty:
+                df_binance = df[df['Exchange'] == 'Binance'].set_index('Coin')
+                c1, c2, c3, c4 = st.columns(4)
+                
+                def render_card(col, coin):
+                    if coin in df_binance.index:
+                        price = df_binance.loc[coin, 'Price']
+                        change = df_binance.loc[coin, 'Change24h%']
+                        fmt = "${:,.4f}" if price < 1 else "${:,.2f}"
+                        
+                        # 根據漲跌變色 (Streamlit 預設是綠漲紅跌，但我們可以強化)
+                        col.metric(
+                            label=f"{coin}/USDT",
+                            value=fmt.format(price),
+                            delta=f"{change:.2f}%"
+                        )
+                    else:
+                        col.warning(f"{coin} N/A")
+
+                render_card(c1, 'BTC')
+                render_card(c2, 'ETH')
+                render_card(c3, 'SOL')
+                render_card(c4, 'DOGE')
+            else:
+                st.error("⚠️ 無法連接交易所 API")
+
+        # ===========================
+        # 第二區：情緒 & 比價 (Split View)
+        # ===========================
+        col_left, col_right = st.columns([1, 2], gap="medium")
+
+        # 左邊：情緒指數 (Gauge)
+        with col_left:
+            with st.container(border=True):
+                st.subheader("市場情緒")
+                if fgi_data:
+                    val = fgi_data['value']
+                    state = fgi_data['state']
+                    
+                    # 顏色邏輯
+                    if val < 25: color, emoji = "inverse", "💀 極度恐懼"
+                    elif val < 45: color, emoji = "inverse", "😨 恐懼"
+                    elif val > 75: color, emoji = "normal", "🤡 極度貪婪"
+                    elif val > 55: color, emoji = "normal", "🤑 貪婪"
+                    else: color, emoji = "off", "🤓 中立"
+                    
+                    st.metric("Fear & Greed", f"{val}", f"{emoji}", delta_color=color)
+                    st.progress(val / 100)
+                    st.caption(f"目前狀態：{state}")
+                else:
+                    st.info("暫無情緒數據")
+
+        # 右邊：比價表 (Table)
+        with col_right:
+            with st.container(border=True):
+                st.subheader("跨交易所價差")
+                if not df.empty:
+                    pivot_df = df.pivot(index='Coin', columns='Exchange', values='Price')
+                    # 高亮顯示最大值 (Highlighter)
+                    st.dataframe(
+                        pivot_df.style.format("${:,.2f}").highlight_max(axis=1, color='#1f77b4'), 
+                        use_container_width=True
                     )
                 else:
-                    col.warning(f"{coin} 載入中")
-
-            render_card(c1, 'BTC')
-            render_card(c2, 'ETH')
-            render_card(c3, 'SOL')
-            render_card(c4, 'DOGE')
-        else:
-            st.error("⚠️ 無法連接交易所 API")
-
-        st.markdown("---")
+                    st.info("暫無比價數據")
 
         # ===========================
-        # 第二區：情緒 & 比價
+        # 第三區：鯨魚警報 (Terminal Style)
         # ===========================
-        col_left, col_right = st.columns([1, 2])
-
-        # 左邊：情緒指數
-        with col_left:
-            st.subheader("😱 市場情緒")
-            if fgi_data:
-                val = fgi_data['value']
-                state = fgi_data['state']
-                if val < 40:
-                    color, emoji = "inverse", "😨"
-                elif val > 60:
-                    color, emoji = "normal", "🤑"
-                else:
-                    color, emoji = "off", "😐"
+        with st.container(border=True):
+            st.subheader("鏈上鯨魚監控 (On-Chain Alert)")
+            
+            if whale_data:
+                df_whale = pd.DataFrame(whale_data)
                 
-                st.metric("Fear & Greed", f"{val}", f"{emoji} {state}", delta_color=color)
-                st.progress(val / 100)
+                # 1. 警報區 (Alert Box)
+                max_whale = df_whale.loc[df_whale['value_usd'].idxmax()]
+                st.warning(
+                    f"🚨 **Whale Alert**: {max_whale['time']} | "
+                    f"轉移 **{max_whale['amount']} {max_whale['symbol']}** "
+                    f"( ${max_whale['value_usd']} M)"
+                )
+                
+                # 2. 詳細清單
+                with st.expander("查看詳細交易紀錄", expanded=True):
+                    st.dataframe(
+                        df_whale,
+                        column_config={
+                            "time": "Time",
+                            "symbol": "Token",
+                            "amount": st.column_config.NumberColumn("Amount"),
+                            "value_usd": st.column_config.NumberColumn("Value (M)", format="$%.2f M"),
+                            "from": "From Address",
+                            "link": st.column_config.LinkColumn("Tx Hash", display_text="Etherscan ↗")
+                        },
+                        hide_index=True,
+                        use_container_width=True
+                    )
             else:
-                st.info("暫無情緒數據")
-
-        # 右邊：比價表
-        with col_right:
-            st.subheader("📊 交易所價差監控")
-            if not df.empty:
-                pivot_df = df.pivot(index='Coin', columns='Exchange', values='Price')
-                st.dataframe(pivot_df.style.format("${:,.2f}"), use_container_width=True)
-
-        st.markdown("---")
-
-        # ===========================
-        # 第三區：鯨魚警報 (自動顯示)
-        # ===========================
-        st.subheader("🐋 鏈上鯨魚監控 (On-Chain Whale Alert)")
-        st.caption("監控標準：BTC > $500萬 USD | ETH > $200萬 USD (自動掃描中...)")
-
-        if whale_data:
-            df_whale = pd.DataFrame(whale_data)
-            
-            # 1. 顯示最驚人的一筆
-            max_whale = df_whale.loc[df_whale['value_usd'].idxmax()]
-            st.warning(f"🚨 最新巨鯨動態：{max_whale['time']} 有人轉移了 {max_whale['amount']} {max_whale['symbol']} (價值 ${max_whale['value_usd']} M)")
-            
-            # 2. 顯示詳細清單
-            st.dataframe(
-                df_whale,
-                column_config={
-                    "time": "時間",
-                    "symbol": "幣種",
-                    "amount": st.column_config.NumberColumn("數量"),
-                    "value_usd": st.column_config.NumberColumn("價值 (百萬鎂)", format="$%.2f M"),
-                    "from": "發送方",
-                    "link": st.column_config.LinkColumn("鏈上 Tx Hash", display_text="查看 Etherscan")
-                },
-                hide_index=True,
-                use_container_width=True
-            )
-        else:
-            st.info(f"🌊 ({current_time}) 目前區塊鏈上一片風平浪靜，暫無巨額轉帳。")
+                st.success(f" ({current_time}) 區塊鏈平靜無波，暫無大額轉帳。")
 
     # 啟動自動刷新函式
     show_live_dashboard()

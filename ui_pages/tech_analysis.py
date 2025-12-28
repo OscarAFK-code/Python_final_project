@@ -18,7 +18,7 @@ def fetch_exchange_data(symbol="BTC/USDT", timeframe="1d", limit=100):
         return pd.DataFrame()
 
 def show():
-    st.title("📊 專業技術分析室")
+    st.title("專業技術分析室")
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:

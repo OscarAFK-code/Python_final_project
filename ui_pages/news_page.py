@@ -85,7 +85,7 @@ def show():
                         return "中立"
 
                 # 建立一個新欄位來顯示文字
-                df['AI 訊號'] = df['情緒分數'].apply(get_simple_label)
+                df['情緒'] = df['情緒分數'].apply(get_simple_label)
 
                 # 顯示表格 (不使用 style.bar，回歸單純)
                 st.dataframe(

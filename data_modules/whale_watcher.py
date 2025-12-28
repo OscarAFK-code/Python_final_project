@@ -5,7 +5,14 @@ import time
 import random
 
 # 設定區
-ETHERSCAN_API_KEY = "ETUAVQGCEJS6Z755JGQ2K9C1GSEHTGHK2Z" 
+import streamlit as st
+
+# 嘗試從 Secrets 讀取，如果沒有設定 (例如在本地跑)，就用空字串或預設值
+if "ETHERSCAN_API_KEY" in st.secrets:
+    ETHERSCAN_API_KEY = st.secrets["ETHERSCAN_API_KEY"]
+else:
+    # 這裡可以是空字串，或者你在本地測試用的 Key (不要上傳)
+    ETHERSCAN_API_KEY = "你的測試KEY"
 BTC_THRESHOLD = 5000000  
 ETH_THRESHOLD = 2000000  
 

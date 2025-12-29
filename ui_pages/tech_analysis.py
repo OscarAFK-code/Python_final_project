@@ -41,7 +41,6 @@ def show():
 
     st.markdown("---")
 
-    # --- 1. 抓取數據 (增加緩衝至 100 筆以滿足 MACD 26日需求) ---
     buffer_size = 100 
     total_limit = config["limit"] + buffer_size
     
@@ -50,8 +49,7 @@ def show():
 
     if df.empty: return
 
-    # --- 2. 根據定義計算指標 ---
-    # MA 定義
+    # 根據定義計算指標
     df["MA20"] = df["Close"].rolling(window=20).mean()
     df["MA60"] = df["Close"].rolling(window=60).mean()
     
@@ -69,22 +67,17 @@ def show():
     # MACD 定義
     exp12 = df['Close'].ewm(span=12, adjust=False).mean()
     exp26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['DIF'] = exp12 - exp26  # 快線
-    df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()  # 慢線 (MACD線)
-    df['MACD_Hist'] = df['DIF'] - df['DEA']  # 柱狀圖
+    df['DIF'] = exp12 - exp26  
+    df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()  
+    df['MACD_Hist'] = df['DIF'] - df['DEA']
 
-    # --- 3. 切除緩衝數據 ---
     plot_df = df.iloc[buffer_size:].copy()
-
-    # --- 4. 繪圖 ---
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, 
                         subplot_titles=(f"{symbol} 趨勢分析", sub_chart), row_width=[0.4, 0.6])
 
-    # [主圖] K線圖
     fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
                                  low=plot_df['Low'], close=plot_df['Close'], name="K線"), row=1, col=1)
 
-    # [主圖] 疊加指標
     if "MA20 (月線)" in overlays:
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["MA20"], line=dict(color='orange', width=1.5), name="MA20"), row=1, col=1)
     if "MA60 (季線)" in overlays:
@@ -93,8 +86,6 @@ def show():
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Upper"], line=dict(color='rgba(255,255,255,0.2)', width=1), name="布林上軌"), row=1, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Lower"], line=dict(color='rgba(255,255,255,0.2)', width=1), 
                                  fill='tonexty', fillcolor='rgba(173, 216, 230, 0.1)', name="布林下軌"), row=1, col=1)
-
-    # [副圖] 根據選擇切換
     if sub_chart == "Volume (成交量)":
         colors = ['red' if r['Open'] > r['Close'] else 'green' for i, r in plot_df.iterrows()]
         fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Volume'], marker_color=colors, name="成交量"), row=2, col=1)
@@ -105,10 +96,8 @@ def show():
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
 
     elif sub_chart == "MACD":
-        # 繪製 DIF 與 DEA 線
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['DIF'], line=dict(color='white', width=1.5), name="DIF (快線)"), row=2, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['DEA'], line=dict(color='yellow', width=1.5), name="DEA (慢線)"), row=2, col=1)
-        # 繪製柱狀圖：紅柱代表正值（多頭動能），綠柱代表負值（空頭動能）
         hist_colors = ['red' if val >= 0 else 'green' for val in plot_df['MACD_Hist']]
         fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['MACD_Hist'], marker_color=hist_colors, name="MACD柱狀圖"), row=2, col=1)
 

@@ -5,14 +5,7 @@ import time
 import random
 
 # 設定區
-import streamlit as st
-
-# 嘗試從 Secrets 讀取，如果沒有設定 (例如在本地跑)，就用空字串或預設值
-if "ETHERSCAN_API_KEY" in st.secrets:
-    ETHERSCAN_API_KEY = st.secrets["ETHERSCAN_API_KEY"]
-else:
-    # 這裡可以是空字串，或者你在本地測試用的 Key (不要上傳)
-    ETHERSCAN_API_KEY = "你的測試KEY"
+ETHERSCAN_API_KEY = "ETUAVQGCEJS6Z755JGQ2K9C1GSEHTGHK2Z" 
 BTC_THRESHOLD = 5000000  
 ETH_THRESHOLD = 2000000  
 
@@ -108,7 +101,7 @@ def get_whale_alerts(is_demo=False):
     if is_demo:
         return generate_fake_whales()
     
-    # 真實模式：抓 BTC + 抓 ETH
+    # 抓 BTC + 抓 ETH
     btc = get_btc_whales_real()
     time.sleep(0.5) # 稍微休息一下避免 API 過載
     eth = get_eth_whales_real()

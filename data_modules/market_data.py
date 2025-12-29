@@ -2,7 +2,7 @@ import ccxt
 import pandas as pd
 import requests
 
-# --- 1. 初始化交易所 ---
+# 初始化交易所
 # 我們使用全域變數來儲存連線實例，避免每次呼叫都重新連線
 exchanges = {
     'binance': ccxt.binance({'enableRateLimit': True}),
@@ -32,20 +32,17 @@ def get_price_data(coins=['BTC', 'ETH', 'SOL', 'DOGE']):
             symbol = get_symbol_for_exchange(exchange_name, coin)
             
             try:
-                # 抓取 Ticker
                 ticker = exchange_obj.fetch_ticker(symbol)
                 
-                # 整理資料
                 all_data.append({
-                    'Exchange': exchange_name.capitalize(), # 轉成大寫開頭比較好看
+                    'Exchange': exchange_name.capitalize(), 
                     'Coin': coin,
                     'Price': ticker['last'],
-                    'Change24h%': ticker.get('percentage', 0), # 若沒抓到漲跌幅則補 0
+                    'Change24h%': ticker.get('percentage', 0), 
                     'Volume': ticker.get('baseVolume', 0)
                 })
             except Exception as e:
                 print(f"⚠️ Error fetching {symbol} from {exchange_name}: {e}")
-                # 發生錯誤時填入 None 或 0，避免程式崩潰
                 all_data.append({
                     'Exchange': exchange_name.capitalize(),
                     'Coin': coin,
@@ -54,7 +51,6 @@ def get_price_data(coins=['BTC', 'ETH', 'SOL', 'DOGE']):
                     'Volume': 0
                 })
 
-    # 轉成 Pandas 表格，方便前端顯示
     return pd.DataFrame(all_data)
 
 def get_fear_and_greed_index():
@@ -63,10 +59,9 @@ def get_fear_and_greed_index():
     """
     url = "https://api.alternative.me/fng/"
     try:
-        response = requests.get(url, timeout=10) # 設定 10秒超時
+        response = requests.get(url, timeout=10) 
         data = response.json()
         
-        # API 回傳結構：{'data': [{'value': '55', 'value_classification': 'Greed', ...}], ...}
         if 'data' in data and len(data['data']) > 0:
             item = data['data'][0]
             return {

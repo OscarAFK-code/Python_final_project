@@ -8,7 +8,6 @@ def analyze_sentiment(title):
     功能：中英雙語情緒分析 (關鍵字計分法)
     """
     # 1. 定義中英雙語關鍵字庫
-    # 這些是經過挑選的高頻財經詞彙
     positive_keywords = [
     # --- 中文 (Traditional Chinese) ---
     "上漲", "大漲", "飆升", "突破", "新高", "牛市", "看好", 
@@ -43,7 +42,6 @@ def analyze_sentiment(title):
     # 轉小寫以利英文比對 (Bitcoin = bitcoin)
     title_lower = title.lower() 
     
-    # 2. 開始計分
     for word in positive_keywords:
         if word in title_lower:
             score += 1
@@ -52,7 +50,6 @@ def analyze_sentiment(title):
         if word in title_lower:
             score -= 1
             
-    # 3. 判定結果
     if score > 0:
         label = "正向"
     elif score < 0:
@@ -99,16 +96,15 @@ def fetch_google_news(keyword="Bitcoin", limit=100, lang='en'):
             link = item.link.text
             pub_date = item.pubDate.text
             source = item.source.text if item.source else "Google News"
-            
-            # 呼叫雙語情緒分析
+
             score, label = analyze_sentiment(title)
             
             news_list.append({
                 "標題": title,
                 "來源": source,
                 "發布時間": pub_date,
-                "情緒標籤": label, # 顯示給人看
-                "情緒分數": score, # 之後畫圖用
+                "情緒標籤": label, 
+                "情緒分數": score, 
                 "連結": link
             })
             
